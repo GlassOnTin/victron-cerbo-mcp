@@ -6,3 +6,9 @@ dist/
 build/
 *.egg-info/
 .uv/
+
+# Pico firmware: never commit credentials
+firmware/pico-grid-meter/config.py
+
+# Pi bridge: never commit credentials
+bridge/pi-grid-meter/bridge.env

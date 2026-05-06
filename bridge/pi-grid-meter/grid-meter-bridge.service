@@ -1,0 +1,19 @@
+[Unit]
+Description=SDM120 -> Cerbo MQTT bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ian
+Group=dialout
+WorkingDirectory=/home/ian/grid-meter-bridge
+EnvironmentFile=/home/ian/grid-meter-bridge/bridge.env
+ExecStart=/home/ian/grid-meter-bridge/venv/bin/python /home/ian/grid-meter-bridge/bridge.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

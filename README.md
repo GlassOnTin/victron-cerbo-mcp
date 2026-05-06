@@ -95,3 +95,78 @@ uv run pytest
 ```
 
 Live integration tests (hits the real Cerbo) are gated on `VICTRON_LIVE=1`.
+
+## Companion firmware: `firmware/pico-grid-meter/`
+
+A Raspberry Pi Pico 2 W reads an Eastron SDM120CT-M over RS485 and publishes
+the result to the Cerbo's MQTT broker, where the community
+[`mr-manuel/venus-os_dbus-mqtt-grid`](https://github.com/mr-manuel/venus-os_dbus-mqtt-grid)
+driver picks it up as `com.victronenergy.grid`. With ESS Assistant loaded
+into the MultiPlus, this lets the system charge the battery from the AC-in
+side whenever the household solar inverter exports surplus.
+
+### Wiring (low-voltage side)
+
+```
+        Pico 2 W                     MAX485 module                   SDM120CT-M
+        ┌────────┐                   ┌──────────┐                    ┌──────────┐
+   3V3 ─┤ 3V3    │                   │ VCC ←────┤ from Pico 3V3      │          │
+   GND ─┤ GND ───┼───────────────────┤ GND      │                    │          │
+   GP0 ─┤ TX  ───┼───────────────────┤ DI       │                    │          │
+   GP1 ─┤ RX  ───┼───────────────────┤ RO       │                    │          │
+   GP2 ─┤ DE/RE ─┼───────────────────┤ DE+RE    │   (twisted pair)   │          │
+        │        │                   │ A    ────┼────────────────────┤ A (T+)   │  ← term 8
+        │        │                   │ B    ────┼────────────────────┤ B (T-)   │  ← term 9
+        └────────┘                   └──────────┘                    └──────────┘
+                                          │ │
+                                       120Ω termination across A/B
+                                       at the far end (the SDM120 end)
+```
+
+Notes:
+
+- DE and RE are tied together so one GPIO drives both (transmit-when-high).
+- 120 Ω termination resistor across A/B at the end of the bus far from the
+  Pico (the SDM120). On a single-meter run under ~5 m it usually works
+  without termination but the resistor costs nothing.
+- Add 680 Ω bias pull-up (A→VCC) and pull-down (B→GND) on the Pico end if
+  you see flaky reads — most MAX485 breakouts include these already.
+
+### Wiring (mains side — electrician)
+
+- Eastron CT (ESCT-TA16) clamps around the **Live** meter tail, between
+  the smart meter and the house consumer unit. Arrow on the CT must point
+  **toward** the consumer unit (away from the grid).
+- CT secondary leads (white = S1, black = S2) terminate at the SDM120's
+  CT input terminals. **Never disconnect a CT while load current is
+  flowing through it** — the open secondary develops dangerous voltage.
+- SDM120 needs L+N for its own supply; provide via a 6 A MCB if there
+  isn't already a metering circuit.
+- Whole assembly should live in the same enclosure as the meter — not
+  in the garage.
+
+### Flashing
+
+Tested against [MicroPython 1.24+](https://micropython.org/download/RPI_PICO2_W/)
+for Pico 2 W:
+
+```bash
+# 1) Hold BOOTSEL while plugging in; copy the .uf2 to RPI-RP2.
+# 2) Then push the firmware files:
+mpremote connect auto fs cp firmware/pico-grid-meter/*.py :
+mpremote connect auto fs cp firmware/pico-grid-meter/config.py :
+mpremote connect auto reset
+# Watch the boot output:
+mpremote connect auto repl
+```
+
+`config.py` is gitignored — copy `config.example.py`, fill in WiFi and
+MQTT credentials, and only that copy goes onto the Pico.
+
+### What's verified vs. not
+
+- Code compiles and the structure mirrors the SDM120 datasheet pinout —
+  but the firmware has not yet been run against real hardware.
+- Modbus register addresses are taken from the Eastron SDM120CT-M
+  protocol document. The default address (1) and baud (2400) match
+  factory defaults; verify via the meter's setup button.

@@ -170,3 +170,37 @@ MQTT credentials, and only that copy goes onto the Pico.
 - Modbus register addresses are taken from the Eastron SDM120CT-M
   protocol document. The default address (1) and baud (2400) match
   factory defaults; verify via the meter's setup button.
+
+## VEConfigure VM prep: `tools/win11-vm-prep/`
+
+Loading the ESS Assistant into the MultiPlus needs VEConfigure 3, a
+Windows-only tool. The included `autounattend.xml` provisions a
+disposable Win11 24H2 VM with no user interaction, then `install.ps1`
+silently fetches VEConfigure 3 + the FTDI driver for the MK3-USB cable.
+
+```bash
+# 1. Edit autounattend.xml - replace CHANGE_ME with a local password.
+# 2. Build a 1.44 MB FAT12 floppy with autounattend.xml at root:
+truncate -s 1474560 /var/lib/libvirt/images/autounattend.flp
+mkfs.vfat -n UNATTEND /var/lib/libvirt/images/autounattend.flp
+mcopy -i /var/lib/libvirt/images/autounattend.flp tools/win11-vm-prep/autounattend.xml ::/
+
+# 3. Attach the floppy (and a Win11 ISO) to a fresh VM, boot.
+#    Setup picks up the answer file from A: and runs through to the
+#    desktop unattended (~5 min on SSD).
+
+# 4. Once at the desktop, host an HTTP server holding install.ps1 and
+#    fetch+run from inside Windows:
+iwr -useb http://<host>:<port>/install.ps1 -OutFile $env:TEMP\inst.ps1
+powershell -ExecutionPolicy Bypass -File $env:TEMP\inst.ps1
+```
+
+The autounattend file:
+- Skips Microsoft account requirement (Win11 24H2-compatible)
+- Creates a local administrator with auto-login
+- Bypasses TPM/SecureBoot/RAM/network checks (works on minimal VMs)
+- en-GB locale, GMT timezone
+
+`install.ps1` is interactive on click-through (Inno Setup ignores `/S`,
+FTDI installer ignores `/quiet`) — about half a dozen Next/Finish
+clicks. Total wall time including OS install: ~10 minutes.

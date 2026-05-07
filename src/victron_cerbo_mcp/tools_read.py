@@ -17,7 +17,7 @@ from typing import Any
 from mcp.server.fastmcp import Context, FastMCP
 
 from .bridge import VictronBridge
-from .schema import DeviceInfo, SystemOverview
+from .schema import DeviceInfo, GridStatus, SystemOverview
 
 
 def _bridge(ctx: Context) -> VictronBridge:
@@ -99,6 +99,46 @@ def register(mcp: FastMCP) -> None:
                 "writable": type(m).__name__ == "WritableMetric",
             })
         return out
+
+    @mcp.tool()
+    async def grid_status(ctx: Context) -> GridStatus:
+        """Live grid meter snapshot from com.victronenergy.grid (any instance).
+
+        Backed by the dbus-mqtt-grid driver on the Cerbo, which subscribes to
+        the JSON published by the workshop's SDM120 bridge. Returns power
+        (signed, +ve = importing), L1 voltage / current, and lifetime
+        forward/reverse energy counters.
+
+        If no grid device is found (driver not running, or no MQTT data yet),
+        ``found`` is False.
+        """
+        b = _bridge(ctx)
+        g = b.get_value_by_short_id
+
+        # Find the grid device's unique_id for context.
+        grid_device_uid = None
+        for d in b.device_summary():
+            if (d.get("device_type") or "").lower() == "grid":
+                grid_device_uid = d["unique_id"]
+                break
+
+        if grid_device_uid is None:
+            return GridStatus(
+                found=False,
+                note="no com.victronenergy.grid device on dbus — check dbus-mqtt-grid service on Cerbo",
+            )
+
+        return GridStatus(
+            found=True,
+            power_w=g("grid_power"),
+            power_l1_w=g("grid_power_l1"),
+            voltage_l1_v=g("grid_voltage_l1"),
+            current_l1_a=g("grid_current_l1"),
+            energy_forward_kwh=g("grid_energy_forward"),
+            energy_reverse_kwh=g("grid_energy_reverse"),
+            phases=g("system_grid_phases"),
+            device_unique_id=grid_device_uid,
+        )
 
     @mcp.tool()
     async def metric_get(ctx: Context, unique_id: str) -> dict[str, Any]:

@@ -43,3 +43,22 @@ class DeviceInfo(BaseModel):
     model: str | None = None
     instance: int | None = None
     metric_count: int = 0
+
+
+class GridStatus(BaseModel):
+    """Snapshot of the grid meter exposed via com.victronenergy.grid.
+
+    Sign convention (Victron's): power > 0 = importing from grid;
+    power < 0 = exporting to grid (surplus solar etc).
+    """
+
+    found: bool = True
+    power_w: float | None = None
+    power_l1_w: float | None = None
+    voltage_l1_v: float | None = None
+    current_l1_a: float | None = None
+    energy_forward_kwh: float | None = None
+    energy_reverse_kwh: float | None = None
+    phases: int | None = None
+    device_unique_id: str | None = None
+    note: str | None = None

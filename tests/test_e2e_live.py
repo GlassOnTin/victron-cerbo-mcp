@@ -47,6 +47,7 @@ async def test_lists_expected_tools():
             names = {t.name for t in (await s.list_tools()).tools}
     expected = {
         "system_overview", "list_devices", "list_metrics", "metric_get",
+        "grid_status",
         "set_grid_setpoint", "set_minimum_soc", "set_ess_mode",
         "set_multiplus_mode", "set_input_current_limit",
         "set_dvcc_max_charge_current", "set_mppt_charge_current_limit",
@@ -64,6 +65,19 @@ async def test_system_overview_returns_battery_soc():
     payload = json.loads(_join(result))
     assert payload["battery_soc_pct"] is not None
     assert 0 <= payload["battery_soc_pct"] <= 100
+
+
+async def test_grid_status_returns_voltage():
+    async with stdio_client(_params()) as (r, w):
+        async with ClientSession(r, w) as s:
+            await s.initialize()
+            result = await s.call_tool("grid_status", {})
+    payload = json.loads(_join(result))
+    assert payload["found"] is True, f"grid device not found: {payload}"
+    # Even with no CT clamp fitted, voltage_l1_v should be a real mains
+    # reading and energy/power counters should exist (may be 0).
+    assert payload["voltage_l1_v"] is not None
+    assert 200 < payload["voltage_l1_v"] < 260
 
 
 async def test_metric_get_known_short_id():

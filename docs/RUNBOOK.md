@@ -22,8 +22,10 @@ dbus-mqtt-grid / ESS Assistant chain commissioned 2026-05-07.
                               │             │                 │   │  S/N HQ23244KZMY                   │
                               │      [USB-RS485 (CP2102)]     │   │  ─VE.Bus port 1: MK3-USB-C ────────┼── garage Pi 5 USB
                               │             │                 │   │  ─VE.Bus port 2: Cerbo VE.Bus     │   (192.168.0.234)
-                              │       [Pi 4 "3dprinter"]      │   │  ─AC-out: freezers, lighting,     │
-                              │       (192.168.0.149 wlan0)   │   │           DC MPPT 150/35           │
+                              │       [Pi 4 "grid-meter"]     │   │  ─AC-out: freezers, lighting,     │
+                              │       (grid-meter.local       │   │           DC MPPT 150/35           │
+                              │        wlan0, DHCP-reserved   │   │                                    │
+                              │        to 192.168.0.99)       │   │                                    │
                               │             │                 │   │  ─DC: ECO-Worthy 48V 100Ah LFP    │
                               │       MQTT/TLS over WiFi      │   │           BMS on CAN              │
                               │             │                 │   └────────────┬───────────────────────┘
@@ -63,7 +65,7 @@ dbus-mqtt-grid / ESS Assistant chain commissioned 2026-05-07.
 | Battery | ECO-Worthy 48V 100Ah | (in garage) | LiFePO4, BMS on CAN bus (`battery.socketcan_vecan1`) |
 | MPPT (DC) | SmartSolar 150/35 | (in garage) | DC-coupled, on VE.Direct |
 | Grid meter | Eastron SDM120CT-M | house CU | 9600 8N1, addr 1, CT on L tail |
-| Pi 4 ("3dprinter") | Raspberry Pi 4 | 192.168.0.149 (WiFi) | runs `grid-meter-bridge.service` + USB-RS485 to SDM120 |
+| Pi 4 (`grid-meter`, was `3dprinter` before 2026-05-09) | Raspberry Pi 4 | `grid-meter.local` (WiFi); DHCP-reserved to 192.168.0.99 in FritzBox | runs `grid-meter-bridge.service` + USB-RS485 to SDM120 |
 | Pi 5 (garage) | Raspberry Pi 5 | 192.168.0.234 | exports MK3-USB-C via USB/IP |
 | MK3-USB-C | Victron VE.Bus interface | (Pi 5 + Multi) | FTDI 0403:6015, S/N HQ2531TYYZU |
 | Win11 VM | libvirt domain `win11` | host KVM | VEConfigure 3 + FTDI driver (CDM21216) |
@@ -133,22 +135,73 @@ Multi internal (set by ESS Assistant):
 ### Pi 4 grid bridge stopped publishing
 
 ```bash
-ssh ian@192.168.0.149 'sudo systemctl restart grid-meter-bridge.service'
-ssh ian@192.168.0.149 'sudo journalctl -u grid-meter-bridge -n 20 --no-pager'
+ssh ian@grid-meter.local 'sudo systemctl restart grid-meter-bridge.service'
+ssh ian@grid-meter.local 'sudo journalctl -u grid-meter-bridge -n 20 --no-pager'
 ```
 
-If the Pi 4 isn't at 192.168.0.149 any more, locate it via:
+If `grid-meter.local` doesn't resolve (mDNS broken / avahi off), locate it via the FritzBox:
 
 ```bash
-nslookup 3dprinter.fritz.box 192.168.0.1
+nslookup grid-meter.fritz.box 192.168.0.1   # was 3dprinter.fritz.box pre-2026-05-09
+# DHCP reservation: dc:a6:32:ba:34:1a → 192.168.0.99
 ```
 
 Common cause: hourly `killall python` cron killed it. We removed the offending crontab entry on 2026-05-07; if it ever returns, check root's crontab on the Pi 4:
 
 ```bash
-ssh ian@192.168.0.149 'sudo crontab -l'
+ssh ian@grid-meter.local 'sudo crontab -l'
 # the dangerous line was:
 #   0 * * * * /usr/bin/killall python && /usr/sbin/service picamera2-webstream restart
+```
+
+### Bridge auth fails with `rc=Not authorized` (after Cerbo password change)
+
+The bridge connects to the Cerbo broker on 192.168.0.208:8883/TLS with
+username `pi-bridge` and **the Cerbo Remote Console password** as the
+MQTT password. There is no separate "MQTT account" — the Cerbo broker
+just accepts any non-empty username + the Remote Console password.
+
+So whenever the Cerbo Remote Console password is rotated (e.g. when you
+enable root SSH for the first time and Venus forces a new password),
+`MQTT_PASSWORD` in the bridge's env file becomes stale and ESS reports
+**"#49 Grid meter not found"**. Symptom in the bridge journal:
+
+```
+INFO grid-meter-bridge mqtt connected: rc=Not authorized
+WARNING grid-meter-bridge mqtt disconnected: rc=Unspecified error
+WARNING grid-meter-bridge publish enqueue failed   (repeating)
+```
+
+…and on the Cerbo:
+
+```
+INFO:root:Waiting since 60 seconds for receiving first data...
+ERROR:root:Driver stopped. Timeout of 60 seconds exceeded...
+```
+
+Fix in **three** places after a password change:
+
+1. Pi 4 bridge (then restart):
+
+   ```bash
+   ssh ian@grid-meter.local 'sudo sed -i "s|^MQTT_PASSWORD=.*|MQTT_PASSWORD=<NEW>|" /home/ian/grid-meter-bridge/bridge.env'
+   ssh ian@grid-meter.local 'sudo systemctl restart grid-meter-bridge'
+   ssh ian@grid-meter.local 'sudo journalctl -u grid-meter-bridge -n 5 --no-pager'  # expect rc=Success
+   ```
+
+2. Workstation MCP config:
+
+   ```bash
+   # ~/.claude.json → mcpServers.victron-cerbo.env.CERBO_MQTT_PASSWORD
+   ```
+
+3. The Cerbo itself (Settings → General → Remote Console password) — already done if this is what triggered the rotation.
+
+After step 1, verify the chain came back:
+
+```bash
+ssh root@192.168.0.208 'dbus -y | grep grid'
+# expect: com.victronenergy.grid.mqtt_grid_100
 ```
 
 ### dbus-mqtt-grid driver on Cerbo restarting
@@ -235,7 +288,27 @@ sudo qemu-img snapshot -l /var/lib/libvirt/images/win11.qcow2
 
 ### ESS config lost (e.g. after Multi factory reset)
 
-VEConfigure 3 in the Win11 VM, with USB/IP attached:
+VEConfigure 3 in the Win11 VM, with USB/IP attached.
+
+> **CRITICAL — battery-back the upload chain before you click Send.**
+> "Send settings" / "Send assistant setup" power-cycles the Multi for
+> 20–60 s. The garage Pi 5 (`192.168.0.234`) **and** the garage router
+> are both on AC-Out — they go dark mid-send, the usbip session breaks,
+> and the Multi can be left half-flashed. Before clicking Send:
+>
+> - Plug the Pi 5 into a USB power bank (verified survives the outage).
+> - Switch the usbip session onto the Pi 5's wlan0 IP (via UpperPiano2),
+>   not eth0 via the garage router. Re-bind on Pi 5
+>   (`usbip bind -b 3-1`), re-attach on host
+>   (`sudo usbip attach -r <wlan-ip> -b 3-1`), then
+>   `virsh detach-device / attach-device` the FTDI hostdev so Windows
+>   re-recognises COM3 as OK.
+> - Don't disturb anything in the chain (ssh, virt-viewer, USB) until
+>   the Multi reports "Send completed".
+>
+> If something goes wrong mid-flash, recover via VEConfigure's
+> **Repair assistant installation** button (sidebar of the Assistants
+> tab), or re-send a known-good `.RVMS` file you saved before starting.
 
 1. Run `~/bin/mk3-attach.sh`
 2. Open VEConfigure 3 in the VM (via virt-viewer)
@@ -246,11 +319,11 @@ VEConfigure 3 in the Win11 VM, with USB/IP attached:
    - Battery: **LiFePo4 with other type BMS**
    - Capacity: **100 Ah**
    - Change battery type: **as suggested**
-   - Sustain V: **50.0 V**
-   - Cut-off curve: defaults
+   - Sustain V: **48.0 V** (3.00 V/cell × 16S; well above EcoWorthy BMS LV cut-off ~40–44 V)
+   - Cut-off curve: 47.0 / 46.0 / 44.0 / 42.0 V at 0.005C / 0.25C / 0.7C / 2C (Victron defaults)
    - Restart offset: **1.20 V**
    - PV inverters on AC out: **No**
-7. Send settings → modified → OK
+7. Send settings → modified → OK (with battery-backup checks above)
 8. Re-apply hardening on the Cerbo:
    ```bash
    ssh root@192.168.0.208 '

@@ -123,12 +123,80 @@ Multi internal (set by ESS Assistant):
 |---|---|
 | Battery type | LiFePo4 with other type BMS |
 | Capacity | 100 Ah |
-| Sustain V | 50.00 V |
+| Sustain V | 48.00 V (3.00 V/cell × 16S; was 50.00 V before 2026-05-09) |
 | Absorption V (overridden by BMS DVCC to 58.4 V) | 56.80 V |
 | Float V | 54.00 V |
 | Virtual switch | **Off** (was "dedicated ignore AC input" pre-ESS) |
 | PowerAssist | unchecked (ESS replaces it) |
 | Lithium batteries | checked |
+
+## Anti-islanding / grid-loss behaviour
+
+**Two separate layers — don't conflate them.**
+
+### Layer 1: anti-islanding (safety, hardware)
+
+Done by the **MultiPlus**, not the Cerbo. The Cerbo can't be in this loop —
+anti-islanding has to react in tens of milliseconds and survive the Cerbo
+crashing or being unplugged. UK grid codes require this at the inverter.
+
+How it actually works when the grid drops to 0 V (or out-of-spec):
+
+1. The Multi continuously monitors AC-In voltage / frequency / RoCoF
+   against the grid-code thresholds (UK G98/1 March 2019: ~207–253 V,
+   ~47–52 Hz, plus rate-of-change-of-frequency limits).
+2. On out-of-spec, the Multi **opens its internal transfer relay within
+   ~20 ms**. AC-In is now physically isolated from AC-Out.
+3. The inverter switches on and powers AC-Out from the battery.
+4. The relay stays open until AC-In is back AND stable for the reconnect
+   time (~60 s for G98).
+
+Net effect: zero possibility of energising a dead grid line, regardless
+of what the Cerbo, ESS controller, or even the user is doing. AC-Out
+keeps running (UPS function) down to `MinimumSocLimit = 50 %`, then
+sustain at 48 V.
+
+### Layer 2: feed-in policy (Cerbo / ESS settings)
+
+These are **policy, not safety** — they belt-and-braces the "don't push
+power upstream" intent under normal grid-up conditions. Pull the Cerbo
+out and they go away, but Layer 1 still works.
+
+| Setting | Value | Effect |
+|---|---|---|
+| `PreventFeedback` | 1 | Cerbo won't command the Multi to feed in |
+| `MaxFeedInPower` | 0 W | Even if commanded, no power |
+| `MaxChargePower` | 0 W | No grid-charging either |
+| `AcPowerSetPoint` | +50 W | Slight import bias so noise/lag don't pulse-export |
+
+These don't help during a partial grid event the Multi accepts as valid
+(e.g. a brown-out at 200 V that's still in-spec, or frequency shifts the
+Multi rides through). For those you're trusting the grid-code firmware
+in the Multi alone.
+
+### Verifying it's actually wired up
+
+```bash
+# Grid code on the Multi — set by VEConfigure, password-locked after first send
+ssh root@192.168.0.208 'dbus -y com.victronenergy.vebus.ttyS4 /Settings/Devices/0/GridCodeStandard GetValue 2>&1'
+
+# Live AC-In state (1 = grid connected through transfer relay; 0 = isolated)
+ssh root@192.168.0.208 'dbus -y com.victronenergy.vebus.ttyS4 /Ac/ActiveIn/Connected GetValue'
+
+# AC-In voltage / frequency the Multi sees right now
+ssh root@192.168.0.208 'dbus -y com.victronenergy.vebus.ttyS4 /Ac/ActiveIn/L1/V GetValue'
+ssh root@192.168.0.208 'dbus -y com.victronenergy.vebus.ttyS4 /Ac/ActiveIn/L1/F GetValue'
+```
+
+### Tested vs not
+
+- Verified: grid-code G98/1 + G99/1 written to the Multi (locked at first
+  ESS send, 2026-05-07).
+- Verified: `PreventFeedback`/`MaxFeedInPower`/`MaxChargePower` all 0/1
+  per the ESS configuration table above.
+- **NOT verified**: actual relay opening on grid loss. To test, pull the
+  AC-In MCB at the garage CU and confirm AC-Out stays powered from
+  battery (lights, freezer) without flicker. Planned but not done.
 
 ## Recovery procedures
 

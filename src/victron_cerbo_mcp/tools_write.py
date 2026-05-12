@@ -149,3 +149,52 @@ def register(mcp: FastMCP) -> None:
             ctx, "solarcharger_mode", "on" if enabled else "off",
             requested_for_response=enabled,
         )
+
+    @mcp.tool()
+    async def set_evcharger_mode(
+        ctx: Context, mode: str, confirm: bool = False
+    ) -> WriteResult:
+        """Victron EV Charger NS mode.
+
+        One of:
+          * "manual"           — fixed setpoint, ignores solar surplus
+          * "auto"             — modulates with ESS solar surplus
+          * "scheduled_charge" — follows the charger's schedule
+        """
+        _require_confirm(confirm, "set EV charger mode")
+        if mode not in bounds.EVCHARGER_MODE_VALUES:
+            raise ValueError(
+                f"mode must be one of {sorted(bounds.EVCHARGER_MODE_VALUES)}"
+            )
+        return await _do_write(ctx, "evcharger_mode", mode)
+
+    @mcp.tool()
+    async def set_evcharger_charge(
+        ctx: Context, enabled: bool, confirm: bool = False
+    ) -> WriteResult:
+        """Start or stop EV charging (Manual-mode start/stop switch)."""
+        _require_confirm(confirm, "toggle EV charger")
+        return await _do_write(
+            ctx, "evcharger_charge", "on" if enabled else "off",
+            requested_for_response=enabled,
+        )
+
+    @mcp.tool()
+    async def set_evcharger_current(
+        ctx: Context, amps: float, confirm: bool = False
+    ) -> WriteResult:
+        """EV Charger current setpoint (A). Bounds: 6–13 (J1772 floor / Iin_max)."""
+        _require_confirm(confirm, "set EV charger current")
+        bounds.EVCHARGER_CURRENT_A.check(amps, "amps")
+        return await _do_write(ctx, "evcharger_set_current", int(amps))
+
+    @mcp.tool()
+    async def set_evcharger_auto_start(
+        ctx: Context, enabled: bool, confirm: bool = False
+    ) -> WriteResult:
+        """Auto-start charging when a vehicle is plugged in."""
+        _require_confirm(confirm, "toggle EV charger auto-start")
+        return await _do_write(
+            ctx, "evcharger_auto_start", "on" if enabled else "off",
+            requested_for_response=enabled,
+        )

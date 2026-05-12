@@ -45,10 +45,16 @@ DVCC_MAX_CHARGE_A = NumericBounds(0, 50)
 # SmartSolar MPPT 150/35: hardware rated to 35 A.
 MPPT_CHARGE_CURRENT_A = NumericBounds(0, 35)
 
+# Victron EV Charger NS: device-reported range on this install is 6–13 A
+# (driven by the EVCS's own Iin_max=13 A setting, and a hard 6 A minimum
+# from the J1772/Type-2 pilot signal duty-cycle floor).
+EVCHARGER_CURRENT_A = NumericBounds(6, 13)
+
 
 # --- enum allowed sets (string IDs the lib accepts in .set()) ---------------
 
 ESS_MODE_VALUES = {"phase_compensation_enabled", "phase_compensation_disabled", "external_control"}
 MULTIPLUS_MODE_VALUES = {"charger_only", "inverter_only", "on", "off"}
+EVCHARGER_MODE_VALUES = {"manual", "auto", "scheduled_charge"}
 SWITCH_VALUES = {"on", "off"}
 RELAY_INDEXES = {0, 1}

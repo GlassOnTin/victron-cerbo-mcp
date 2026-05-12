@@ -47,6 +47,15 @@ def test_mppt_charge_current_capped_at_35():
         bounds.MPPT_CHARGE_CURRENT_A.check(36, "a")
 
 
+def test_evcharger_current_j1772_floor_and_iin_max_ceiling():
+    bounds.EVCHARGER_CURRENT_A.check(6, "a")
+    bounds.EVCHARGER_CURRENT_A.check(13, "a")
+    with pytest.raises(ValueError):
+        bounds.EVCHARGER_CURRENT_A.check(5, "a")
+    with pytest.raises(ValueError):
+        bounds.EVCHARGER_CURRENT_A.check(14, "a")
+
+
 # ---------- enum sets ----------
 
 def test_ess_mode_set_complete():
@@ -60,6 +69,12 @@ def test_ess_mode_set_complete():
 def test_multiplus_mode_set_complete():
     assert bounds.MULTIPLUS_MODE_VALUES == {
         "charger_only", "inverter_only", "on", "off",
+    }
+
+
+def test_evcharger_mode_set_complete():
+    assert bounds.EVCHARGER_MODE_VALUES == {
+        "manual", "auto", "scheduled_charge",
     }
 
 

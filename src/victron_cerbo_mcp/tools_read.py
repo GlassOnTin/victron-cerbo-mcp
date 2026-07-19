@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from mcp.server.fastmcp import Context, FastMCP
+from fastmcp import Context, FastMCP
 
 from .bridge import VictronBridge
 from .schema import DeviceInfo, GridStatus, SystemOverview

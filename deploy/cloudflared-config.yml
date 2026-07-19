@@ -1,0 +1,13 @@
+# cloudflared ingress for the Cerbo MCP Connectors.
+# Place at /etc/cloudflared/config.yml on the Pi after `cloudflared service install <TOKEN>`.
+# Replace <TUNNEL-UUID> and <your-domain> with the values from the Cloudflare dashboard.
+
+tunnel: <TUNNEL-UUID>
+credentials-file: /etc/cloudflared/<TUNNEL-UUID>.json
+
+ingress:
+  - hostname: cerbo.<your-domain>
+    service: http://localhost:8766
+  - hostname: cerbo-ro.<your-domain>
+    service: http://localhost:8765
+  - service: http_status:404

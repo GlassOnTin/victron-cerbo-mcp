@@ -13,7 +13,7 @@ specific kit; they may differ on other firmwares. If a tool reports
 
 from __future__ import annotations
 
-from mcp.server.fastmcp import Context, FastMCP
+from fastmcp import Context, FastMCP
 
 from . import bounds
 from .bridge import VictronBridge

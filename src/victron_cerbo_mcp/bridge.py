@@ -68,19 +68,42 @@ class BridgeConfig:
         )
 
 
+class BridgeReconnecting(RuntimeError):
+    """Raised when an operation is attempted while the bridge is offline.
+
+    The HTTP server stays up across Cerbo broker outages; tools surface this
+    instead of hanging or returning stale data.
+    """
+
+
 class VictronBridge:
-    """Single shared Hub + write lock + small helpers."""
+    """Single shared Hub + write lock + reconnect supervisor."""
 
     def __init__(self, cfg: BridgeConfig):
         self.cfg = cfg
         self.hub: Hub | None = None
         self._write_lock = asyncio.Lock()
+        self._supervisor_task: asyncio.Task | None = None
+        self._stop_requested = False
 
     @property
     def read_only(self) -> bool:
         return self.cfg.read_only
 
+    @property
+    def connected(self) -> bool:
+        return self.hub is not None and getattr(self.hub, "connected", False)
+
     async def connect(self) -> None:
+        await self._open_hub()
+        # Supervisor watches for disconnects and re-opens the hub. Only useful
+        # for long-running HTTP mode; harmless under stdio (process exits).
+        if self._supervisor_task is None:
+            self._supervisor_task = asyncio.create_task(
+                self._supervise(), name="victron-bridge-supervisor"
+            )
+
+    async def _open_hub(self) -> None:
         log.info(
             "connecting host=%s port=%s ssl=%s read_only=%s",
             self.cfg.host, self.cfg.port, self.cfg.use_ssl, self.cfg.read_only,
@@ -97,7 +120,40 @@ class VictronBridge:
         await self.hub.wait_for_first_refresh()
         log.info("connected, devices=%d", len(self.hub.devices))
 
+    async def _supervise(self) -> None:
+        """Re-open the hub on disconnect with exponential backoff (1s -> 30s)."""
+        backoff = 1.0
+        while not self._stop_requested:
+            await asyncio.sleep(10.0)
+            if self._stop_requested:
+                return
+            if self.connected:
+                backoff = 1.0
+                continue
+            log.warning("bridge disconnected, reconnecting (backoff=%.1fs)", backoff)
+            try:
+                if self.hub is not None:
+                    try:
+                        await self.hub.disconnect()
+                    except Exception:
+                        pass
+                    self.hub = None
+                await self._open_hub()
+                backoff = 1.0
+            except Exception as e:
+                log.error("reconnect failed: %r (next attempt in %.1fs)", e, backoff)
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 30.0)
+
     async def close(self) -> None:
+        self._stop_requested = True
+        if self._supervisor_task is not None:
+            self._supervisor_task.cancel()
+            try:
+                await self._supervisor_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._supervisor_task = None
         if self.hub is not None:
             await self.hub.disconnect()
             self.hub = None
@@ -105,8 +161,11 @@ class VictronBridge:
     # ------------- read helpers -------------
 
     def require_hub(self) -> Hub:
-        if self.hub is None:
-            raise RuntimeError("bridge is not connected")
+        if not self.connected:
+            raise BridgeReconnecting(
+                "bridge is offline (Cerbo MQTT broker unreachable); supervisor is reconnecting"
+            )
+        assert self.hub is not None
         return self.hub
 
     def get_metric(self, unique_id: str) -> Any | None:

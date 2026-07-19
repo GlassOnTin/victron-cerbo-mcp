@@ -1,0 +1,19 @@
+[Unit]
+Description=Victron Cerbo MCP — full-access Connector (desktop)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ian
+Group=ian
+WorkingDirectory=/home/ian/cerbo-mcp
+EnvironmentFile=/etc/cerbo-mcp.env
+ExecStart=/home/ian/cerbo-mcp/.venv/bin/victron-cerbo-mcp
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

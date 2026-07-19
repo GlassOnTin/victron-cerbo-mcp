@@ -1,14 +1,21 @@
-"""SDM120 → Cerbo MQTT bridge.
+"""SDM120 → Cerbo MQTT bridge (multi-meter).
 
-Runs on a Pi attached to the house consumer unit. Reads the Eastron
-SDM120CT-M every PUBLISH_PERIOD_S seconds via USB-RS485 (Modbus RTU) and
-publishes a single JSON document to the Cerbo's MQTT broker matching the
-shape mr-manuel/dbus-mqtt-grid expects.
+Runs on a Pi attached to the house consumer unit. Reads one or more
+Eastron SDM120CT-M meters every PUBLISH_PERIOD_S seconds via shared
+USB-RS485 (Modbus RTU) and publishes one JSON document per meter to
+the Cerbo's MQTT broker. The payload shape per meter depends on its
+role: "grid" matches mr-manuel/dbus-mqtt-grid, "pv" matches
+mr-manuel/dbus-mqtt-pv.
 
-All credentials and tunables come from environment variables.
+All credentials and tunables come from environment variables. Meters
+are configured via METER_<N>_ADDR / METER_<N>_ROLE / METER_<N>_TOPIC
+(see bridge.env.example).
 
-Sign convention (matches Victron's): power > 0 = importing from grid;
-power < 0 = exporting to grid.
+Sign convention: power > 0 means
+  - grid: importing from grid
+  - pv:   producing
+POWER_SIGN flips the meter's raw reading when the CT is wired the
+"wrong way round" relative to the convention above.
 """
 
 from __future__ import annotations
@@ -41,13 +48,24 @@ REG_IMPORT_ENERGY = 0x0048    # kWh, lifetime
 REG_EXPORT_ENERGY = 0x004A    # kWh, lifetime
 
 
+VALID_ROLES = ("grid", "pv")
+
+
+@dataclass(frozen=True)
+class MeterConfig:
+    name: str
+    slave_addr: int
+    role: str
+    topic: str
+    power_sign: int
+
+
 @dataclass(frozen=True)
 class Config:
     serial_port: str
     serial_baud: int
     serial_parity: str
     serial_stopbits: int
-    modbus_addr: int
     modbus_timeout_s: float
     modbus_retries: int
 
@@ -58,11 +76,11 @@ class Config:
     mqtt_username: str
     mqtt_password: str
     mqtt_client_id: str
-    mqtt_topic: str
     mqtt_keepalive_s: int
 
+    meters: tuple
+
     publish_period_s: float
-    power_sign: int
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -82,12 +100,36 @@ class Config:
             v = os.environ.get(k, str(default)).strip().lower()
             return v in ("1", "true", "yes", "on")
 
+        meters = []
+        n = 1
+        while True:
+            addr_env = os.environ.get(f"METER_{n}_ADDR")
+            if not addr_env:
+                break
+            role = os.environ.get(f"METER_{n}_ROLE", "").strip().lower()
+            if role not in VALID_ROLES:
+                raise SystemExit(
+                    f"METER_{n}_ROLE must be one of {VALID_ROLES} (got {role!r})"
+                )
+            topic = os.environ.get(f"METER_{n}_TOPIC")
+            if not topic:
+                raise SystemExit(f"missing required env var: METER_{n}_TOPIC")
+            meters.append(MeterConfig(
+                name=os.environ.get(f"METER_{n}_NAME", f"meter{n}"),
+                slave_addr=int(addr_env),
+                role=role,
+                topic=topic,
+                power_sign=int(os.environ.get(f"METER_{n}_POWER_SIGN", "1")),
+            ))
+            n += 1
+        if not meters:
+            raise SystemExit("no meters configured: set METER_1_ADDR / METER_1_ROLE / METER_1_TOPIC")
+
         return cls(
             serial_port=env_str("SERIAL_PORT", "/dev/ttyUSB0"),
             serial_baud=env_int("SERIAL_BAUD", 9600),
             serial_parity=env_str("SERIAL_PARITY", "N"),
             serial_stopbits=env_int("SERIAL_STOPBITS", 1),
-            modbus_addr=env_int("MODBUS_ADDR", 1),
             modbus_timeout_s=env_float("MODBUS_TIMEOUT_S", 1.0),
             modbus_retries=env_int("MODBUS_RETRIES", 3),
             mqtt_host=env_str("MQTT_HOST", required=True),
@@ -96,11 +138,10 @@ class Config:
             mqtt_tls_insecure=env_bool("MQTT_TLS_INSECURE", True),
             mqtt_username=env_str("MQTT_USERNAME", "pi-bridge"),
             mqtt_password=env_str("MQTT_PASSWORD", required=True),
-            mqtt_client_id=env_str("MQTT_CLIENT_ID", "sdm120-grid-bridge"),
-            mqtt_topic=env_str("MQTT_TOPIC", "victron/grid/sdm120"),
+            mqtt_client_id=env_str("MQTT_CLIENT_ID", "sdm120-bridge"),
             mqtt_keepalive_s=env_int("MQTT_KEEPALIVE_S", 30),
+            meters=tuple(meters),
             publish_period_s=env_float("PUBLISH_PERIOD_S", 2.0),
-            power_sign=int(os.environ.get("POWER_SIGN", "1")),
         )
 
 
@@ -116,7 +157,9 @@ def _crc16(data: bytes) -> bytes:
     return bytes([crc & 0xFF, (crc >> 8) & 0xFF])
 
 
-class SDM120Reader:
+class SDM120Bus:
+    """One USB-RS485 port, shared by all meters on the chain."""
+
     def __init__(self, cfg: Config):
         self._cfg = cfg
         self._ser: Optional[serial.Serial] = None
@@ -150,12 +193,11 @@ class SDM120Reader:
                 pass
             self._ser = None
 
-    def _read_float(self, reg: int) -> float:
+    def _read_float(self, slave: int, reg: int) -> float:
         self._ensure_open()
         ser = self._ser
-        addr = self._cfg.modbus_addr
-        req = bytes([addr, 0x04, (reg >> 8) & 0xFF, reg & 0xFF, 0, 2]) + _crc16(
-            bytes([addr, 0x04, (reg >> 8) & 0xFF, reg & 0xFF, 0, 2])
+        req = bytes([slave, 0x04, (reg >> 8) & 0xFF, reg & 0xFF, 0, 2]) + _crc16(
+            bytes([slave, 0x04, (reg >> 8) & 0xFF, reg & 0xFF, 0, 2])
         )
 
         last_exc: Optional[Exception] = None
@@ -175,7 +217,7 @@ class SDM120Reader:
                         break
                 if len(buf) < 5:
                     raise OSError(f"short response ({len(buf)} bytes)")
-                if buf[0] != addr or buf[1] != 0x04 or buf[2] != 4:
+                if buf[0] != slave or buf[1] != 0x04 or buf[2] != 4:
                     raise OSError(f"bad header: {buf[:3].hex()}")
                 if _crc16(buf[:-2]) != buf[-2:]:
                     raise OSError(f"CRC mismatch: {buf.hex()}")
@@ -184,19 +226,18 @@ class SDM120Reader:
                 last_exc = e
                 if attempt < self._cfg.modbus_retries - 1:
                     time.sleep(0.05)
-                # If serial error, drop and reopen on next attempt
                 if isinstance(e, serial.SerialException):
                     self.close()
-        raise OSError(f"read reg 0x{reg:04X} failed after retries: {last_exc}")
+        raise OSError(f"read slave={slave} reg=0x{reg:04X} failed after retries: {last_exc}")
 
-    def read_all(self) -> dict:
+    def read_all(self, slave: int) -> dict:
         return {
-            "voltage": self._read_float(REG_VOLTAGE),
-            "current": self._read_float(REG_CURRENT),
-            "power": self._read_float(REG_ACTIVE_POWER),
-            "frequency": self._read_float(REG_FREQUENCY),
-            "energy_forward": self._read_float(REG_IMPORT_ENERGY),
-            "energy_reverse": self._read_float(REG_EXPORT_ENERGY),
+            "voltage": self._read_float(slave, REG_VOLTAGE),
+            "current": self._read_float(slave, REG_CURRENT),
+            "power": self._read_float(slave, REG_ACTIVE_POWER),
+            "frequency": self._read_float(slave, REG_FREQUENCY),
+            "energy_forward": self._read_float(slave, REG_IMPORT_ENERGY),
+            "energy_reverse": self._read_float(slave, REG_EXPORT_ENERGY),
         }
 
 
@@ -245,15 +286,15 @@ class MqttBridge:
         except Exception:
             pass
 
-    def publish(self, payload: bytes) -> bool:
-        info = self._client.publish(self._cfg.mqtt_topic, payload, qos=0, retain=False)
+    def publish(self, topic: str, payload: bytes) -> bool:
+        info = self._client.publish(topic, payload, qos=0, retain=False)
         return info.rc == mqtt.MQTT_ERR_SUCCESS
 
 
-# --- Main loop ---
+# --- Payload formatters ---
 
 
-def _payload_for(reading: dict, sign: int) -> bytes:
+def _grid_payload(reading: dict, sign: int) -> bytes:
     p = reading["power"] * sign
     i = reading["current"] * sign
     obj = {
@@ -272,6 +313,41 @@ def _payload_for(reading: dict, sign: int) -> bytes:
     return json.dumps(obj).encode("utf-8")
 
 
+def _pv_payload(reading: dict, sign: int) -> bytes:
+    p = reading["power"] * sign
+    i = reading["current"] * sign
+    # When sign flips the CT, lifetime production accumulates in the SDM120's
+    # "export" register instead of "import".
+    energy_forward = reading["energy_forward"] if sign >= 0 else reading["energy_reverse"]
+    obj = {
+        "pv": {
+            "power": round(p, 2),
+            "voltage": round(reading["voltage"], 2),
+            "current": round(i, 3),
+            "energy_forward": round(energy_forward, 3),
+            "L1": {
+                "power": round(p, 2),
+                "voltage": round(reading["voltage"], 2),
+                "current": round(i, 3),
+                "frequency": round(reading["frequency"], 3),
+                "energy_forward": round(energy_forward, 3),
+            },
+        }
+    }
+    return json.dumps(obj).encode("utf-8")
+
+
+def _payload_for(meter: MeterConfig, reading: dict) -> bytes:
+    if meter.role == "grid":
+        return _grid_payload(reading, meter.power_sign)
+    if meter.role == "pv":
+        return _pv_payload(reading, meter.power_sign)
+    raise ValueError(f"unknown role: {meter.role}")
+
+
+# --- Main loop ---
+
+
 def main():
     logging.basicConfig(
         level=os.environ.get("LOG_LEVEL", "INFO").upper(),
@@ -279,7 +355,7 @@ def main():
     )
     cfg = Config.from_env()
 
-    reader = SDM120Reader(cfg)
+    bus = SDM120Bus(cfg)
     bridge = MqttBridge(cfg)
     bridge.start()
 
@@ -290,29 +366,31 @@ def main():
     signal.signal(signal.SIGINT, _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)
 
-    log.info("bridge running: period=%.1fs sign=%d", cfg.publish_period_s, cfg.power_sign)
+    log.info("bridge running: period=%.1fs meters=%s",
+             cfg.publish_period_s,
+             [(m.name, m.slave_addr, m.role, m.topic) for m in cfg.meters])
     next_tick = time.monotonic()
-    consecutive_failures = 0
+    consecutive_bus_errors = 0
 
     while not stop:
-        try:
-            reading = reader.read_all()
-            payload = _payload_for(reading, cfg.power_sign)
-            ok = bridge.publish(payload)
-            if ok:
-                log.debug("published %s", payload.decode())
-                consecutive_failures = 0
-            else:
-                consecutive_failures += 1
-                log.warning("publish enqueue failed")
-        except Exception as e:
-            consecutive_failures += 1
-            log.warning("read/publish error (%d in a row): %s", consecutive_failures, e)
-            if consecutive_failures >= 5:
-                # Aggressive reset: drop serial so it reopens fresh.
-                log.warning("repeated failures; closing serial for reopen")
-                reader.close()
-                consecutive_failures = 0
+        for meter in cfg.meters:
+            try:
+                reading = bus.read_all(meter.slave_addr)
+                payload = _payload_for(meter, reading)
+                ok = bridge.publish(meter.topic, payload)
+                if ok:
+                    log.debug("%s: published %s", meter.name, payload.decode())
+                    consecutive_bus_errors = 0
+                else:
+                    log.warning("%s: publish enqueue failed", meter.name)
+            except Exception as e:
+                consecutive_bus_errors += 1
+                log.warning("%s: read/publish error (%d in a row): %s",
+                            meter.name, consecutive_bus_errors, e)
+                if consecutive_bus_errors >= 5:
+                    log.warning("repeated failures; closing serial for reopen")
+                    bus.close()
+                    consecutive_bus_errors = 0
 
         next_tick += cfg.publish_period_s
         slack = next_tick - time.monotonic()
@@ -323,7 +401,7 @@ def main():
 
     log.info("shutting down")
     bridge.stop()
-    reader.close()
+    bus.close()
 
 
 if __name__ == "__main__":

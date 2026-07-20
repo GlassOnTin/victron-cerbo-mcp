@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -17,6 +18,14 @@ import victron_mqtt
 from victron_mqtt import Hub
 
 log = logging.getLogger(__name__)
+
+# Supervisor tuning.
+_HEALTH_TICK_S = 10.0      # how often the supervisor re-checks health
+_STALE_AFTER_S = 240.0     # no full publish for this long => dead. The library's
+                           # periodic full-publish floor is 180s, so 240 leaves
+                           # margin against false positives on a healthy link.
+_CONNECT_TIMEOUT_S = 90.0  # bound a wedged connect / first-refresh
+_BACKOFF_MAX_S = 30.0      # cap between failed reconnect attempts
 
 
 def _coerce_value(v: Any) -> Any:
@@ -94,10 +103,42 @@ class VictronBridge:
     def connected(self) -> bool:
         return self.hub is not None and getattr(self.hub, "connected", False)
 
+    def _healthy(self) -> bool:
+        """True only when the hub is connected AND actually serving fresh data.
+
+        ``hub.connected`` is just paho's socket state; after a Cerbo reboot paho
+        can reconnect the socket while the metric cache is left empty or stale
+        (the "all-null reads" failure this method exists to catch). Two extra
+        signals detect that:
+          * no devices enumerated       -> reconnect hasn't repopulated
+          * _last_full_publish_called   -> monotonic clock of the last full
+                                           publish; stale => no data flowing
+        Both are read defensively (getattr) so a library change degrades to the
+        plain socket check rather than raising.
+        """
+        hub = self.hub
+        if hub is None or not getattr(hub, "connected", False):
+            return False
+        if not getattr(hub, "devices", None):
+            return False
+        last = getattr(hub, "_last_full_publish_called", None)
+        if last is not None and (time.monotonic() - last) > _STALE_AFTER_S:
+            return False
+        return True
+
     async def connect(self) -> None:
-        await self._open_hub()
-        # Supervisor watches for disconnects and re-opens the hub. Only useful
-        # for long-running HTTP mode; harmless under stdio (process exits).
+        # Non-fatal: if the Cerbo is unreachable at startup (e.g. a site-wide
+        # power outage where this host boots before the Cerbo does), start the
+        # server anyway and let the supervisor keep retrying. Tools return
+        # BridgeReconnecting until the link is up, rather than the process dying
+        # with an opaque -32000 at launch.
+        try:
+            await self._open_hub()
+        except Exception as e:
+            log.error("initial connect failed: %r; supervisor will keep retrying", e)
+            await self._safe_disconnect()
+        # Supervisor watches for disconnects/staleness and re-opens the hub.
+        # Long-lived; harmless under stdio (the process exits on EOF).
         if self._supervisor_task is None:
             self._supervisor_task = asyncio.create_task(
                 self._supervise(), name="victron-bridge-supervisor"
@@ -116,34 +157,54 @@ class VictronBridge:
             use_ssl=self.cfg.use_ssl,
             installation_id=self.cfg.installation_id,
         )
-        await self.hub.connect()
-        await self.hub.wait_for_first_refresh()
+        # Bound connect + first refresh so a half-open TCP session can't wedge
+        # the supervisor indefinitely.
+        async with asyncio.timeout(_CONNECT_TIMEOUT_S):
+            await self.hub.connect()
+            await self.hub.wait_for_first_refresh()
         log.info("connected, devices=%d", len(self.hub.devices))
 
+    async def _safe_disconnect(self) -> None:
+        if self.hub is not None:
+            try:
+                await self.hub.disconnect()
+            except Exception:
+                pass
+            self.hub = None
+
     async def _supervise(self) -> None:
-        """Re-open the hub on disconnect with exponential backoff (1s -> 30s)."""
+        """Rebuild the hub whenever it goes unhealthy, with capped backoff.
+
+        Covers a clean disconnect, a startup where the Cerbo wasn't ready yet,
+        and the connected-but-stale state (paho socket up, no data) that
+        previously required a manual reconnect.
+        """
         backoff = 1.0
         while not self._stop_requested:
-            await asyncio.sleep(10.0)
+            await asyncio.sleep(_HEALTH_TICK_S)
             if self._stop_requested:
                 return
-            if self.connected:
+            if self._healthy():
                 backoff = 1.0
                 continue
-            log.warning("bridge disconnected, reconnecting (backoff=%.1fs)", backoff)
+            if self.hub is None:
+                reason = "offline"
+            elif not getattr(self.hub, "connected", False):
+                reason = "disconnected"
+            elif not getattr(self.hub, "devices", None):
+                reason = "connected but no devices"
+            else:
+                reason = "connected but stale (no fresh data)"
+            log.warning("bridge unhealthy (%s), rebuilding hub", reason)
             try:
-                if self.hub is not None:
-                    try:
-                        await self.hub.disconnect()
-                    except Exception:
-                        pass
-                    self.hub = None
+                await self._safe_disconnect()
                 await self._open_hub()
+                log.info("bridge recovered")
                 backoff = 1.0
             except Exception as e:
                 log.error("reconnect failed: %r (next attempt in %.1fs)", e, backoff)
                 await asyncio.sleep(backoff)
-                backoff = min(backoff * 2, 30.0)
+                backoff = min(backoff * 2, _BACKOFF_MAX_S)
 
     async def close(self) -> None:
         self._stop_requested = True
@@ -161,9 +222,10 @@ class VictronBridge:
     # ------------- read helpers -------------
 
     def require_hub(self) -> Hub:
-        if not self.connected:
+        if not self._healthy():
             raise BridgeReconnecting(
-                "bridge is offline (Cerbo MQTT broker unreachable); supervisor is reconnecting"
+                "bridge is offline or reconnecting (Cerbo MQTT link down/stale); "
+                "supervisor is recovering — retry shortly"
             )
         assert self.hub is not None
         return self.hub

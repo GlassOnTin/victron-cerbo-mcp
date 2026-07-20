@@ -200,6 +200,72 @@ ssh root@192.168.0.208 'dbus -y com.victronenergy.vebus.ttyS4 /Ac/ActiveIn/L1/F 
 
 ## Recovery procedures
 
+### E-stop test / full DC disconnect recovery (3-pack stack)
+
+As of 2026-07-20 the bank is **3× ECO-Worthy 48V 100Ah** (≈300 Ah) wired in
+parallel, each pack behind its own breaker fed through a common **emergency
+stop**. Each pack now talks to the Cerbo over **VE.Can (Victron protocol)** and
+presents as one aggregated battery (`battery_512`, `NrOfModulesOnline = 3`).
+Min SoC is now **20 %** and **DESS is enabled** (differs from the 2026-05-07
+`Hub4Mode=2` / MinSoC 50 % tables above).
+
+Pressing the E-stop (or any full DC disconnect) trips each pack's breaker **in
+sequence** and de-energises the whole DC bus. The **Cerbo is powered from that
+bus**, so it loses power too: it goes fully off the network, the broker dies,
+and the MCP returns `bridge is offline … supervisor is recovering`. **This is
+expected, not a fault** — nothing on the DC side comes back until the bus is
+manually re-energised.
+
+Recovery:
+
+1. **Release the E-stop** (twist/pull to unlatch).
+2. **Re-close each pack's battery breaker** — they tripped in sequence; close
+   them to re-energise the bus.
+3. The Cerbo re-powers and boots (~1–2 min), returning at 192.168.0.208
+   (DHCP-reserved, MAC `80:9d:65:7b:5a:18`).
+4. The MCP **self-heals** — the bridge supervisor rebuilds the hub automatically
+   once the Cerbo answers again; **no manual `/mcp` reconnect needed** (post
+   2026-07-20 bridge; older builds get stuck all-null and do need a reconnect).
+
+Tell "still booting" apart from "still unpowered":
+
+```bash
+ping -c2 192.168.0.208 && \
+  (timeout 3 bash -c 'cat </dev/null >/dev/tcp/192.168.0.208/8883' && echo '8883 open')
+```
+
+- No reply / no route for **more than ~2 min** = still **unpowered**: the E-stop
+  is still latched or a breaker is still open. A healthy Cerbo is back on the
+  network within 1–2 min of power. (Seen 2026-07-20: bank left dark ~25 min
+  because the physical reset hadn't been done yet — nothing recovers until it is.)
+
+All-clear checklist (verified 2026-07-20 via MCP `list_metrics`, device `battery_512`):
+
+| Signal | Expect |
+|---|---|
+| `battery_nr_modules_online` | **3** (all packs back) |
+| `battery_nr_modules_offline` | 0 |
+| `battery_nr_modules_blocking_charge` / `_discharge` | 0 / 0 |
+| `battery_cell_imbalance` | No alarm |
+| `battery_internal_failure` | No alarm |
+| system `active_alarms` | empty |
+| SOC / bank voltage | sane (e.g. 100 % / ~56.5 V) |
+
+On-Cerbo equivalent (find the battery service first, name may vary):
+
+```bash
+ssh root@192.168.0.208 'dbus -y | grep battery'   # e.g. com.victronenergy.battery.socketcan_vecan1
+ssh root@192.168.0.208 'dbus -y com.victronenergy.battery.<svc> /System/NrOfModulesOnline GetValue'  # expect 3
+```
+
+**Aggregate cell delta after paralleling — don't misread it.** With 3
+independently-BMS'd packs on one bus, the reported min/max cell voltage spans
+*different packs* (max cell in one pack, min in another), so a wide aggregate
+spread (~170 mV seen 2026-07-20, min in pack 02 / max in pack 01) is **normal
+and not a per-pack imbalance**. Each pack balances itself; the pack-to-pack
+figure will NOT shrink to a single pack's ~15 mV. The real signal is the BMS
+`CellImbalance` alarm, not the raw min/max delta.
+
 ### Pi 4 grid bridge stopped publishing
 
 ```bash

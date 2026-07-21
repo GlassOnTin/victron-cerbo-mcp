@@ -47,6 +47,26 @@ def test_mppt_charge_current_capped_at_35():
         bounds.MPPT_CHARGE_CURRENT_A.check(36, "a")
 
 
+def test_max_charge_power_envelope():
+    # 0 (no AC charging) and 3000 (Multi envelope) are the bounds; -1 (no limit)
+    # is a sentinel handled in the tool, not by check().
+    bounds.MAX_CHARGE_POWER_W.check(0, "w")
+    bounds.MAX_CHARGE_POWER_W.check(3000, "w")
+    with pytest.raises(ValueError):
+        bounds.MAX_CHARGE_POWER_W.check(-1, "w")
+    with pytest.raises(ValueError):
+        bounds.MAX_CHARGE_POWER_W.check(3001, "w")
+
+
+def test_max_feed_in_power_envelope():
+    bounds.MAX_FEED_IN_POWER_W.check(0, "w")
+    bounds.MAX_FEED_IN_POWER_W.check(3000, "w")
+    with pytest.raises(ValueError):
+        bounds.MAX_FEED_IN_POWER_W.check(-1, "w")
+    with pytest.raises(ValueError):
+        bounds.MAX_FEED_IN_POWER_W.check(3001, "w")
+
+
 def test_evcharger_current_j1772_floor_and_iin_max_ceiling():
     bounds.EVCHARGER_CURRENT_A.check(6, "a")
     bounds.EVCHARGER_CURRENT_A.check(13, "a")
@@ -81,3 +101,16 @@ def test_evcharger_mode_set_complete():
 def test_switch_values():
     assert bounds.SWITCH_VALUES == {"on", "off"}
     assert bounds.RELAY_INDEXES == {0, 1}
+
+
+# ---------- tool registration (no network) ----------
+
+async def test_feed_in_policy_tools_registered():
+    from fastmcp import FastMCP
+
+    from victron_cerbo_mcp import tools_write
+
+    m = FastMCP("test")
+    tools_write.register(m)
+    names = {t.name for t in await m.list_tools()}
+    assert {"set_max_charge_power", "set_max_feed_in_power"} <= names

@@ -119,6 +119,43 @@ def register(mcp: FastMCP) -> None:
         return await _do_write(ctx, "system_ess_max_charge_current", amps)
 
     @mcp.tool()
+    async def set_max_charge_power(
+        ctx: Context, watts: float, confirm: bool = False
+    ) -> WriteResult:
+        """ESS max charge power (W) — the AC-side battery-charging limit.
+
+        Controls how much the MultiPlus will charge the battery from AC (grid
+        AND AC-coupled PV surplus):
+          *  0  — no AC-side charging (AC-PV surplus spills to grid instead of
+                  being stored)
+          * -1  — no limit (store all available surplus)
+          * 0-3000 W — explicit cap
+        DC-coupled MPPT charging is NOT limited by this. Requires confirm=True.
+        """
+        _require_confirm(confirm, "set ESS max charge power")
+        if watts != -1:
+            bounds.MAX_CHARGE_POWER_W.check(watts, "watts")
+        return await _do_write(ctx, "system_ess_max_charge_power", watts)
+
+    @mcp.tool()
+    async def set_max_feed_in_power(
+        ctx: Context, watts: float, confirm: bool = False
+    ) -> WriteResult:
+        """ESS max grid feed-in / export power (W).
+
+          *  0  — never export (no feed-in at all)
+          * -1  — no limit (export the overflow once the battery is full)
+          * 0-3000 W — explicit cap
+        Only excess *solar* is exported once the battery is full; plain ESS
+        never exports the battery itself regardless of this value. Requires
+        confirm=True.
+        """
+        _require_confirm(confirm, "set ESS max feed-in power")
+        if watts != -1:
+            bounds.MAX_FEED_IN_POWER_W.check(watts, "watts")
+        return await _do_write(ctx, "system_ess_max_feed_in_power", watts)
+
+    @mcp.tool()
     async def set_mppt_charge_current_limit(
         ctx: Context, amps: float, confirm: bool = False
     ) -> WriteResult:

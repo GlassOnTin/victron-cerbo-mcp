@@ -45,6 +45,15 @@ DVCC_MAX_CHARGE_A = NumericBounds(0, 50)
 # SmartSolar MPPT 150/35: hardware rated to 35 A.
 MPPT_CHARGE_CURRENT_A = NumericBounds(0, 35)
 
+# ESS AC-side max charge power (W). 0 = no AC-side charging, positive = limit.
+# Use -1 for "no limit". Bounded to the MultiPlus 3000 VA envelope; DC-coupled
+# MPPT charging is not governed by this setting.
+MAX_CHARGE_POWER_W = NumericBounds(0, 3000)
+
+# ESS max grid feed-in / export power (W). 0 = never export, positive = limit.
+# Use -1 for "no limit". Bounded to the MultiPlus 3000 VA envelope.
+MAX_FEED_IN_POWER_W = NumericBounds(0, 3000)
+
 # Victron EV Charger NS: device-reported range on this install is 6–13 A
 # (driven by the EVCS's own Iin_max=13 A setting, and a hard 6 A minimum
 # from the J1772/Type-2 pilot signal duty-cycle floor).

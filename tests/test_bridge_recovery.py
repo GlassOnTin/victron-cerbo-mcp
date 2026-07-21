@@ -95,6 +95,36 @@ def test_require_hub_raises_when_unhealthy():
 
 # --------------------------- non-fatal startup (unit) ----------------------
 
+class _ValMetric:
+    """Metric stub exposing a fixed .value for _confirm_write tests."""
+
+    def __init__(self, value):
+        self._v = value
+
+    @property
+    def value(self):
+        return self._v
+
+
+async def test_confirm_write_numeric_confirms():
+    b = VictronBridge(_cfg())
+    assert await b._confirm_write(_ValMetric(20), 20, timeout=1, interval=0.02) is None
+
+
+async def test_confirm_write_numeric_flags_stale_readback():
+    # The failure that made an early set_minimum_soc look like it failed: the
+    # cached read-back never matches the requested value on a laggy link.
+    b = VictronBridge(_cfg())
+    note = await b._confirm_write(_ValMetric(100), 20, timeout=0.3, interval=0.02)
+    assert note and "did not confirm" in note
+
+
+async def test_confirm_write_skips_non_numeric():
+    b = VictronBridge(_cfg())
+    # enum/switch read-backs don't share the set-value representation -> no note
+    assert await b._confirm_write(_ValMetric("Off"), "off", timeout=1) is None
+
+
 async def test_connect_is_nonfatal_when_cerbo_unreachable():
     """A power outage at startup must not kill the server; the supervisor runs."""
     b = VictronBridge(_cfg())

@@ -31,15 +31,29 @@ def _require_confirm(confirm: bool, action: str) -> None:
         )
 
 
+def _parse_hhmm(s: str) -> int:
+    """'HH:MM' (24h) -> minutes since midnight. The schedule metric takes
+    minutes and the library converts to the dbus seconds itself."""
+    try:
+        hh, mm = s.split(":")
+        h, m = int(hh), int(mm)
+    except (ValueError, AttributeError):
+        raise ValueError(f"start must be 'HH:MM' 24-hour, got {s!r}")
+    if not (0 <= h < 24 and 0 <= m < 60):
+        raise ValueError(f"start out of range (00:00-23:59): {s!r}")
+    return h * 60 + m
+
+
 async def _do_write(
     ctx: Context, short_id: str, value, requested_for_response=None
 ) -> WriteResult:
     b = _bridge(ctx)
-    readback = await b.write_by_short_id(short_id, value)
+    readback, note = await b.write_by_short_id(short_id, value)
     return WriteResult(
         unique_id=short_id,
         requested_value=requested_for_response if requested_for_response is not None else value,
         readback_value=readback,
+        note=note,
     )
 
 
@@ -80,6 +94,76 @@ def register(mcp: FastMCP) -> None:
         if mode not in bounds.ESS_MODE_VALUES:
             raise ValueError(f"mode must be one of {sorted(bounds.ESS_MODE_VALUES)}")
         return await _do_write(ctx, "system_ess_mode", mode)
+
+    @mcp.tool()
+    async def set_dess_mode(
+        ctx: Context, mode: str, confirm: bool = False
+    ) -> WriteResult:
+        """Dynamic ESS (DESS) mode.
+
+        One of: "off", "auto_vrm", "buy", "sell", "node_red".
+          * "off"      — plain ESS self-consumption; **never exports the
+                         battery** to the grid.
+          * "auto_vrm" — DESS trades against VRM price schedules and **can
+                         discharge the battery to the grid**.
+          * "buy"/"sell"/"node_red" — other DESS control sources.
+        Requires confirm=True.
+        """
+        _require_confirm(confirm, "set DESS mode")
+        if mode not in bounds.DESS_MODE_VALUES:
+            raise ValueError(f"mode must be one of {sorted(bounds.DESS_MODE_VALUES)}")
+        return await _do_write(ctx, "system_settings_dess_mode", mode)
+
+    @mcp.tool()
+    async def set_scheduled_charge(
+        ctx: Context,
+        slot: int,
+        start: str | None = None,
+        duration_min: int | None = None,
+        soc: int | None = None,
+        days: str | None = None,
+        confirm: bool = False,
+    ) -> list[WriteResult]:
+        """Configure an ESS BatteryLife scheduled-charge slot (0-4).
+
+        Only the fields you pass are changed:
+          * start        — "HH:MM" (24-hour, local)
+          * duration_min — minutes (0-1440)
+          * soc          — target SoC %, 0-100
+          * days         — one of: every_day, weekdays, weekends,
+                           monday..sunday, or a disabled_* id to disable the
+                           slot (e.g. "disabled_every_day")
+        Returns one WriteResult per field changed. Requires confirm=True.
+        """
+        _require_confirm(confirm, "set scheduled charge")
+        if slot not in bounds.SCHEDULE_SLOTS:
+            raise ValueError(f"slot must be one of {sorted(bounds.SCHEDULE_SLOTS)}")
+        results: list[WriteResult] = []
+        base = f"system_ess_schedule_charge_{slot}"
+        if days is not None:
+            if days not in bounds.SCHEDULE_DAY_VALUES:
+                raise ValueError(
+                    f"days must be one of {sorted(bounds.SCHEDULE_DAY_VALUES)}"
+                )
+            results.append(await _do_write(ctx, f"{base}_days", days))
+        if start is not None:
+            results.append(
+                await _do_write(
+                    ctx, f"{base}_start", _parse_hhmm(start),
+                    requested_for_response=start,
+                )
+            )
+        if duration_min is not None:
+            bounds.SCHEDULE_DURATION_MIN.check(duration_min, "duration_min")
+            results.append(await _do_write(ctx, f"{base}_duration", int(duration_min)))
+        if soc is not None:
+            bounds.SCHEDULE_SOC_PCT.check(soc, "soc")
+            results.append(await _do_write(ctx, f"{base}_soc", int(soc)))
+        if not results:
+            raise ValueError(
+                "nothing to set: provide at least one of start / duration_min / soc / days"
+            )
+        return results
 
     @mcp.tool()
     async def set_multiplus_mode(

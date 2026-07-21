@@ -67,6 +67,17 @@ def test_max_feed_in_power_envelope():
         bounds.MAX_FEED_IN_POWER_W.check(3001, "w")
 
 
+def test_schedule_bounds():
+    bounds.SCHEDULE_DURATION_MIN.check(0, "m")
+    bounds.SCHEDULE_DURATION_MIN.check(1440, "m")
+    with pytest.raises(ValueError):
+        bounds.SCHEDULE_DURATION_MIN.check(1441, "m")
+    bounds.SCHEDULE_SOC_PCT.check(0, "s")
+    bounds.SCHEDULE_SOC_PCT.check(100, "s")
+    with pytest.raises(ValueError):
+        bounds.SCHEDULE_SOC_PCT.check(101, "s")
+
+
 def test_evcharger_current_j1772_floor_and_iin_max_ceiling():
     bounds.EVCHARGER_CURRENT_A.check(6, "a")
     bounds.EVCHARGER_CURRENT_A.check(13, "a")
@@ -103,9 +114,34 @@ def test_switch_values():
     assert bounds.RELAY_INDEXES == {0, 1}
 
 
+def test_dess_mode_values():
+    # 'off' is the "never export battery" setting; must be present.
+    assert "off" in bounds.DESS_MODE_VALUES
+    assert bounds.DESS_MODE_VALUES == {"off", "auto_vrm", "buy", "sell", "node_red"}
+
+
+def test_schedule_day_values_have_enable_and_disable():
+    assert {"every_day", "weekdays", "weekends"} <= bounds.SCHEDULE_DAY_VALUES
+    assert {"disabled_every_day", "disabled_weekdays"} <= bounds.SCHEDULE_DAY_VALUES
+    assert bounds.SCHEDULE_SLOTS == {0, 1, 2, 3, 4}
+
+
+# ---------- HH:MM parsing ----------
+
+def test_parse_hhmm():
+    from victron_cerbo_mcp.tools_write import _parse_hhmm
+
+    assert _parse_hhmm("20:00") == 1200
+    assert _parse_hhmm("00:00") == 0
+    assert _parse_hhmm("23:59") == 1439
+    for bad in ["24:00", "12:60", "8", "8:00pm", "-1:00"]:
+        with pytest.raises(ValueError):
+            _parse_hhmm(bad)
+
+
 # ---------- tool registration (no network) ----------
 
-async def test_feed_in_policy_tools_registered():
+async def test_write_tools_registered():
     from fastmcp import FastMCP
 
     from victron_cerbo_mcp import tools_write
@@ -113,4 +149,9 @@ async def test_feed_in_policy_tools_registered():
     m = FastMCP("test")
     tools_write.register(m)
     names = {t.name for t in await m.list_tools()}
-    assert {"set_max_charge_power", "set_max_feed_in_power"} <= names
+    assert {
+        "set_max_charge_power",
+        "set_max_feed_in_power",
+        "set_dess_mode",
+        "set_scheduled_charge",
+    } <= names

@@ -54,6 +54,10 @@ MAX_CHARGE_POWER_W = NumericBounds(0, 3000)
 # Use -1 for "no limit". Bounded to the MultiPlus 3000 VA envelope.
 MAX_FEED_IN_POWER_W = NumericBounds(0, 3000)
 
+# ESS BatteryLife scheduled-charge slot fields.
+SCHEDULE_DURATION_MIN = NumericBounds(0, 1440)   # up to 24 h
+SCHEDULE_SOC_PCT = NumericBounds(0, 100)
+
 # Victron EV Charger NS: device-reported range on this install is 6–13 A
 # (driven by the EVCS's own Iin_max=13 A setting, and a hard 6 A minimum
 # from the J1772/Type-2 pilot signal duty-cycle floor).
@@ -67,3 +71,18 @@ MULTIPLUS_MODE_VALUES = {"charger_only", "inverter_only", "on", "off"}
 EVCHARGER_MODE_VALUES = {"manual", "auto", "scheduled_charge"}
 SWITCH_VALUES = {"on", "off"}
 RELAY_INDEXES = {0, 1}
+
+# Dynamic ESS mode (victron_mqtt enum ids). 'off' = plain ESS self-consumption
+# (never exports the battery); 'auto_vrm'/'buy'/'sell'/'node_red' let DESS trade
+# with the grid and CAN discharge the battery to grid.
+DESS_MODE_VALUES = {"off", "auto_vrm", "buy", "sell", "node_red"}
+
+# ESS BatteryLife scheduled-charge slots (0-4) and the "days" enum ids.
+SCHEDULE_SLOTS = {0, 1, 2, 3, 4}
+SCHEDULE_DAY_VALUES = {
+    "sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday",
+    "every_day", "weekdays", "weekends",
+    "disabled_sunday", "disabled_monday", "disabled_tuesday", "disabled_wednesday",
+    "disabled_thursday", "disabled_friday", "disabled_saturday",
+    "disabled_weekdays", "disabled_weekend", "disabled_every_day",
+}

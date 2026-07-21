@@ -282,21 +282,24 @@ class VictronBridge:
 
     # ------------- write helper -------------
 
-    async def write_metric(self, unique_id: str, value: Any) -> Any:
-        """Set a writable metric by unique_id; return post-write read-back."""
+    async def write_metric(self, unique_id: str, value: Any) -> tuple[Any, str | None]:
+        """Set a writable metric by unique_id; return (read-back, note)."""
         m = self.get_metric(unique_id)
         if m is None:
             raise KeyError(f"metric not found: {unique_id}")
         return await self._write(m, value)
 
-    async def write_by_short_id(self, short_id: str, value: Any) -> Any:
-        """Set a writable metric by short_id; return post-write read-back."""
+    async def write_by_short_id(self, short_id: str, value: Any) -> tuple[Any, str | None]:
+        """Set a writable metric by short_id; return (read-back, note)."""
         m = self.find_metric_by_short_id(short_id)
         if m is None:
             raise KeyError(f"metric not found: {short_id}")
         return await self._write(m, value)
 
-    async def _write(self, m: Any, value: Any) -> Any:
+    async def _write(self, m: Any, value: Any) -> tuple[Any, str | None]:
+        """Write and read back. Returns (readback_value, note). ``note`` is set
+        when a numeric write couldn't be confirmed (laggy link) so the caller
+        never mistakes a stale cached value for the applied one."""
         if self.read_only:
             raise PermissionError(
                 "bridge is in read-only mode (set VICTRON_READ_ONLY=false to enable writes)"
@@ -312,6 +315,37 @@ class VictronBridge:
             )
         async with self._write_lock:
             m.set(value)
-            # Allow the broker round-trip to settle.
+            note = await self._confirm_write(m, value)
+            return _coerce_value(m.value), note
+
+    async def _confirm_write(
+        self, m: Any, requested: Any, timeout: float = 3.0, interval: float = 0.25
+    ) -> str | None:
+        """Poll a numeric metric until its read-back reflects the write.
+
+        Replaces a blind fixed sleep: on a lagging link the cached value can
+        still be the old one when we read it (this is what made an early
+        ``set_minimum_soc`` look like it failed). Only numerics are polled —
+        enum/switch read-backs don't share a representation with the set value,
+        so those just get a short settle. Returns None on confirm, else a note.
+        """
+        numeric = isinstance(requested, (int, float)) and not isinstance(requested, bool)
+        if not numeric:
             await asyncio.sleep(0.5)
-            return _coerce_value(m.value)
+            return None
+        want = float(requested)
+        tol = max(0.5, abs(want) * 0.001)
+        deadline = time.monotonic() + timeout
+        last: Any = None
+        while time.monotonic() < deadline:
+            await asyncio.sleep(interval)
+            last = _coerce_value(m.value)
+            try:
+                if abs(float(last) - want) <= tol:
+                    return None
+            except (TypeError, ValueError):
+                break
+        return (
+            f"read-back {last!r} did not confirm requested {requested!r} within "
+            f"{int(timeout)}s — the Cerbo link may be lagging; re-read to verify"
+        )

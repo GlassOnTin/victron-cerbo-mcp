@@ -62,7 +62,7 @@ dbus-mqtt-grid / ESS Assistant chain commissioned 2026-05-07.
 | Workstation | this Linux box | LAN | runs MCP, virt-manager, USB/IP client |
 | Cerbo GX | `einstein` | 192.168.0.208 | Venus OS Large 3.80~14, root SSH key in /data |
 | MultiPlus II | 48/3000/35-32 | (in garage) | S/N HQ23244KZMY, ESS Assistant active |
-| Battery | ECO-Worthy 48V 100Ah | (in garage) | LiFePO4, BMS on CAN bus (`battery.socketcan_vecan1`) |
+| Battery | 3× ECO-Worthy 48V 100Ah (≈300 Ah) | (in garage) | LiFePO4, **parallel** (since 2026-07-20), VE.Can; aggregates as `battery_512`, 3 modules. BMS on CAN (`battery.socketcan_vecan1`) |
 | MPPT (DC) | SmartSolar 150/35 | (in garage) | DC-coupled, on VE.Direct |
 | Grid meter | Eastron SDM120CT-M | house CU | 9600 8N1, addr 1, CT on L tail |
 | Pi 4 (`grid-meter`, was `3dprinter` before 2026-05-09) | Raspberry Pi 4 | `grid-meter.local` (WiFi); DHCP-reserved to 192.168.0.99 in FritzBox | runs `grid-meter-bridge.service` + USB-RS485 to SDM120 |
@@ -86,7 +86,9 @@ ssh root@192.168.0.208 '
     echo "$s = $(dbus -y com.victronenergy.settings /Settings/CGwacs/$s GetValue)"
   done
 '
-# expect: Hub4Mode=2, MaxChargePower=0, MaxFeedInPower=0, PreventFeedback=1, MinSoC=50
+# expect (from 2026-07-21): Hub4Mode=2, MaxChargePower=-1, MaxFeedInPower=-1, MinSoC=20;
+#         DESS off. See "Grid feed-in & battery-export policy". (Was: MaxChargePower=0,
+#         MaxFeedInPower=0, MinSoC=50 on the 2026-05-07 baseline.)
 
 # 3. Multi state
 ssh root@192.168.0.208 '
@@ -105,6 +107,11 @@ cd /home/ian/Code/victron-cerbo-mcp && \
 ```
 
 ## ESS configuration (locked-in, 2026-05-07)
+
+> **Partly superseded 2026-07-21** — MinSoC 50→20, MaxChargePower 0→−1,
+> MaxFeedInPower 0→−1, and DESS was trialled then disabled. The table below is
+> the original 2026-05-07 baseline; see **"Grid feed-in & battery-export
+> policy"** for the current values and why they changed.
 
 | Setting | Value | Rationale |
 |---|---|---|
@@ -129,6 +136,72 @@ Multi internal (set by ESS Assistant):
 | Virtual switch | **Off** (was "dedicated ignore AC input" pre-ESS) |
 | PowerAssist | unchecked (ESS replaces it) |
 | Lithium batteries | checked |
+
+## Grid feed-in & battery-export policy (updated 2026-07-21)
+
+**Rule: never export the *battery* to the grid. Store all self-generated
+energy; only feed in the overflow once the battery is at 100 % SoC, then top up
+to full from the grid at day's end for overnight backup.**
+
+Current settings (these supersede the 2026-05-07 table where they differ):
+
+| Setting (`/Settings/…`) | Value | Why |
+|---|---|---|
+| `DynamicEss/Mode` | **0 (Off)** | DESS exported the battery to grid — see below |
+| `CGwacs/Hub4Mode` | 2 (Optimised self-consumption) | never discharges battery past the grid setpoint, so it *cannot* dump battery to grid |
+| `CGwacs/MaxChargePower` | **−1 (no limit)** | store **AC-coupled roof-PV surplus**, not just the DC MPPT. Was 0, which capped AC-side charging so roof surplus spilled to grid instead of the battery |
+| `CGwacs/MaxFeedInPower` | −1 (no limit) | allow the *overflow* to export once the battery is full ("only feed in at 100 %") |
+| `CGwacs/BatteryLife/MinimumSocLimit` | 20 % | reserve floor (was 50) |
+| `CGwacs/BatteryLife/Schedule/Charge/0` | **20:00**, 30 min, →100 %, every day | end-of-day grid top-up for full overnight backup. Set **late** (was 15:00) so solar fills the battery for free first; the schedule then only tops up what solar didn't finish. Start is **seconds since midnight** (72000 = 20:00) |
+
+### DESS (Dynamic ESS) dumped the battery to the grid — 2026-07-21
+
+Enabling DESS ("Auto / VRM") makes it the ESS controller, and it will
+**deliberately discharge the battery to the grid** during favourable price
+windows — that is its whole purpose. Plain ESS self-consumption never does this
+(it stops at the grid setpoint), so **DESS is the only thing in this system that
+exports the battery.** If the battery must never reach the grid, don't run DESS.
+
+Gotcha that cost us an hour: **turning DESS off in the VRM portal does NOT
+disable the Cerbo's local mode.** The authoritative off switch is the Cerbo's
+own `/Settings/DynamicEss/Mode` (Settings → DynamicESS → Mode → Off). Verify
+both the setting and that it actually stopped controlling:
+
+```bash
+ssh root@192.168.0.208 'dbus -y com.victronenergy.settings /Settings/DynamicEss/Mode GetValue'  # 0 = off
+# MCP: metric system_dynamicess_active must read "Off" (not just the mode field)
+```
+
+### Verifying "no battery to grid"
+
+With **PV = 0** (night), the battery should discharge only to cover local loads
+while the grid meter reads a small **positive** (≈ +50 W import, the setpoint).
+If the grid reads **negative (export) while the battery is discharging**, that's
+a battery dump — check DESS is off. `MaxFeedInPower = −1` still lets *solar*
+surplus export at 100 % SoC; that is intended here (set it to 0 for zero export
+of any kind).
+
+### NOT yet verified (needs sun)
+
+- That AC-coupled roof-PV surplus now charges the battery **before** any export
+  (the point of the `MaxChargePower −1` change). Check on a sunny day with the
+  battery < 100 %.
+- That no grid-charge fires before the 20:00 schedule.
+- `PreventFeedback` current value was not read this session — confirm it doesn't
+  block the intended overflow-solar export.
+
+### Commands used (dbus over SSH, 2026-07-21)
+
+```bash
+ssh root@192.168.0.208 '
+  dbus -y com.victronenergy.settings /Settings/DynamicEss/Mode SetValue 0
+  dbus -y com.victronenergy.settings /Settings/CGwacs/MaxChargePower SetValue -- -1
+  dbus -y com.victronenergy.settings /Settings/CGwacs/BatteryLife/Schedule/Charge/0/Start SetValue 72000
+'
+```
+
+> The Cerbo `dbus` CLI parses a bare `-1` as an option — pass negatives as
+> `SetValue -- -1`. Schedule Start/Duration are **seconds since midnight**.
 
 ## Anti-islanding / grid-loss behaviour
 
@@ -206,8 +279,9 @@ As of 2026-07-20 the bank is **3× ECO-Worthy 48V 100Ah** (≈300 Ah) wired in
 parallel, each pack behind its own breaker fed through a common **emergency
 stop**. Each pack now talks to the Cerbo over **VE.Can (Victron protocol)** and
 presents as one aggregated battery (`battery_512`, `NrOfModulesOnline = 3`).
-Min SoC is now **20 %** and **DESS is enabled** (differs from the 2026-05-07
-`Hub4Mode=2` / MinSoC 50 % tables above).
+Min SoC is now **20 %**; DESS was enabled 2026-07-20 then **disabled
+2026-07-21** after it exported battery to the grid (see "Grid feed-in &
+battery-export policy").
 
 Pressing the E-stop (or any full DC disconnect) trips each pack's breaker **in
 sequence** and de-energises the whole DC bus. The **Cerbo is powered from that

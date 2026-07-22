@@ -154,6 +154,12 @@ Current settings (these supersede the 2026-05-07 table where they differ):
 | `CGwacs/BatteryLife/MinimumSocLimit` | 20 % | reserve floor (was 50) |
 | `CGwacs/BatteryLife/Schedule/Charge/0` | **20:00**, 30 min, →100 %, every day | end-of-day grid top-up for full overnight backup. Set **late** (was 15:00) so solar fills the battery for free first; the schedule then only tops up what solar didn't finish. Start is **seconds since midnight** (72000 = 20:00) |
 
+> **Restore:** this exact known-good config is snapshotted in
+> `tools/restore-ess-config.sh` (captured & verified 2026-07-22). Run it to
+> re-apply all of the above to the Cerbo over SSH — it prints `before -> after`
+> for each setting. Covers the dbus settings only; the MultiPlus-internal
+> config is in VEConfigure (see "ESS config lost" below).
+
 ### DESS (Dynamic ESS) dumped the battery to the grid — 2026-07-21
 
 Enabling DESS ("Auto / VRM") makes it the ESS controller, and it will
@@ -621,6 +627,8 @@ If missing, see "dbus-mqtt-grid driver" recovery above.
 | `~/Code/victron-cerbo-mcp/bridge/pi-grid-meter/` | Pi 4 bridge service |
 | `~/Code/victron-cerbo-mcp/firmware/pico-grid-meter/` | Pico firmware (parked, HW-519 was DOA) |
 | `~/Code/victron-cerbo-mcp/tools/win11-vm-prep/` | Unattended Win11 install + VEConfigure setup |
+| `~/Code/victron-cerbo-mcp/tools/restore-ess-config.sh` | Restore the known-good ESS/DESS/feed-in config (snapshot 2026-07-22) |
+| `~/Code/victron-cerbo-mcp/tools/sunny_check.py` | Read-only midday check that the store-solar / no-battery-export policy holds |
 | `/etc/systemd/system/grid-meter-bridge.service` (on Pi 4) | bridge systemd unit |
 | `/data/etc/dbus-mqtt-grid/` (on Cerbo) | dbus-mqtt-grid driver |
 | `/data/etc/dbus-mqtt-grid/config.ini` (on Cerbo) | broker host + topic + creds |

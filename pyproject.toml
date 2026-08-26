@@ -18,6 +18,8 @@ http = [
 
 [project.scripts]
 victron-cerbo-mcp = "victron_cerbo_mcp.server:main"
+victron-sensor-daemon = "victron_cerbo_mcp.sensor_daemon:main"
+victron-sensor-status = "victron_cerbo_mcp.sensor_cli:main"
 
 [build-system]
 requires = ["hatchling"]

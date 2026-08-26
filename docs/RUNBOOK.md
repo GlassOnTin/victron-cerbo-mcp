@@ -624,6 +624,12 @@ If missing, see "dbus-mqtt-grid driver" recovery above.
 |---|---|
 | `~/bin/mk3-attach.sh` | One-shot USB/IP chain rebuild |
 | `~/Code/victron-cerbo-mcp/` | This MCP + bridge code |
+| `~/Code/victron-cerbo-mcp/.agents/` | Antigravity (`agy`) project-scoped MCP config & plugin definition |
+| `~/Code/victron-cerbo-mcp/plasma-applet-victroncerbo/` | Native KDE Plasma 6 desktop and panel widget (`org.kde.plasma.victroncerbo`) |
+| `~/Code/victron-cerbo-mcp/src/victron_cerbo_mcp/sensor_daemon.py` | Sensor daemon updating `/dev/shm/victron_sensors.json` & HTTP `127.0.0.1:8766` |
+| `~/Code/victron-cerbo-mcp/src/victron_cerbo_mcp/sensor_cli.py` | Quick CLI sensor telemetry status checker (`victron-sensor-status`) |
+| `~/Code/victron-cerbo-mcp/deploy/victron-sensor-daemon.service` | Systemd user service unit for sensor daemon |
+| `~/Code/victron-cerbo-mcp/deploy/sensor-daemon.env.example` | Example environment file for sensor daemon |
 | `~/Code/victron-cerbo-mcp/bridge/pi-grid-meter/` | Pi 4 bridge service |
 | `~/Code/victron-cerbo-mcp/firmware/pico-grid-meter/` | Pico firmware (parked, HW-519 was DOA) |
 | `~/Code/victron-cerbo-mcp/tools/win11-vm-prep/` | Unattended Win11 install + VEConfigure setup |

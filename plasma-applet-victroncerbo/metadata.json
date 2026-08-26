@@ -1,0 +1,22 @@
+{
+    "KPlugin": {
+        "Authors": [
+            {
+                "Name": "Ian",
+                "Email": "ian@local"
+            }
+        ],
+        "Category": "System Information",
+        "Description": "Monitor Victron Cerbo GX solar, battery, inverter & grid status",
+        "Icon": "battery-charging",
+        "Id": "org.kde.plasma.victroncerbo",
+        "Name": "Victron Energy Monitor",
+        "Version": "1.0",
+        "Website": "https://github.com/GlassOnTin/victron-cerbo-mcp"
+    },
+    "KPackageStructure": "Plasma/Applet",
+    "X-Plasma-API-Minimum-Version": "6.0",
+    "X-Plasma-Provides": [
+        "org.kde.plasma.systemmonitor"
+    ]
+}

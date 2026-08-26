@@ -1,0 +1,4 @@
+{
+  "name": "victron-cerbo",
+  "description": "MCP server and tools for Victron Cerbo GX monitoring and control"
+}

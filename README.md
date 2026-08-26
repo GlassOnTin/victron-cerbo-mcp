@@ -55,7 +55,18 @@ uv run victron-cerbo-mcp
 | `VICTRON_PORTAL_ID` | auto | 12-hex; usually auto-discovered |
 | `VICTRON_READ_ONLY` | `true` | Set to `false` to enable write tools |
 
-## Claude Code MCP registration
+## MCP Registration
+
+### Antigravity (`agy`) Scoped Project Config
+
+This project includes pre-configured project-scoped MCP definitions under `.agents/`:
+
+* Direct MCP definition: [`.agents/mcp_config.json`](.agents/mcp_config.json)
+* Plugin definition: [`.agents/plugins/victron-cerbo/`](.agents/plugins/victron-cerbo/)
+
+When opening this workspace in `agy` or Antigravity, the `victron-cerbo` MCP tools are automatically discovered and loaded.
+
+### Claude Code MCP Registration
 
 Add to `~/.claude.json`:
 
@@ -95,6 +106,55 @@ uv run pytest
 ```
 
 Live integration tests (hits the real Cerbo) are gated on `VICTRON_LIVE=1`.
+
+## KDE Plasma 6 System Monitor Widget & Sensor Daemon
+
+A native KDE Plasma 6 desktop and panel widget (`org.kde.plasma.victroncerbo`) provides real-time system monitoring directly in the KDE desktop environment.
+
+### Features
+* **Compact Taskbar Representation**: Real-time battery SoC badge (color-coded), active solar generation wattage (`☀️ 480W`), and net grid power flow (`🔌 20W` / `⬆️ Export`).
+* **Full Popup / Desktop Dashboard**: Detailed cards for Battery Bank (SoC, power flow, voltage, current, cell min/max delta imbalance in mV, pack temperature, module status), Solar MPPT (live power, daily yield, peak wattage, PV array V/A), MultiPlus-II (inverter state, AC in/out power, DC conversion), and Grid/House consumption.
+* **Fast In-Memory Feeds**: High-performance `/dev/shm/victron_sensors.json` state updates and built-in local HTTP endpoint (`http://127.0.0.1:8766/sensors`).
+
+### Running the Sensor Daemon
+
+Run directly:
+```bash
+uv run victron-sensor-daemon
+```
+
+Or install as a systemd user service:
+```bash
+# 1. Configure credentials (never committed to git)
+mkdir -p ~/.config/victron-cerbo
+cp deploy/sensor-daemon.env.example ~/.config/victron-cerbo/sensor-daemon.env
+chmod 600 ~/.config/victron-cerbo/sensor-daemon.env
+# Edit ~/.config/victron-cerbo/sensor-daemon.env and add CERBO_MQTT_PASSWORD
+
+# 2. Enable and start user service
+mkdir -p ~/.config/systemd/user
+cp deploy/victron-sensor-daemon.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now victron-sensor-daemon.service
+```
+
+### CLI Quick Status Check
+
+Query live telemetry from terminal anytime:
+```bash
+uv run victron-sensor-status
+# or format as raw JSON:
+uv run victron-sensor-status --json
+```
+
+### Installing the Plasma Widget
+
+```bash
+mkdir -p ~/.local/share/plasma/plasmoids/org.kde.plasma.victroncerbo
+cp -r plasma-applet-victroncerbo/* ~/.local/share/plasma/plasmoids/org.kde.plasma.victroncerbo/
+```
+
+Then right-click any Plasma panel or desktop, click **"Add Widgets..."**, search for **"Victron Energy Monitor"**, and drag it onto your screen.
 
 ## Companion firmware: `firmware/pico-grid-meter/`
 

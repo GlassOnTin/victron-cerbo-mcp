@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "victron-cerbo": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "/home/ian/Code/victron-cerbo-mcp",
+        "victron-cerbo-mcp"
+      ],
+      "env": {
+        "VICTRON_HOST": "venus.local",
+        "CERBO_MQTT_PASSWORD": "${CERBO_MQTT_PASSWORD}",
+        "VICTRON_READ_ONLY": "true"
+      }
+    }
+  }
+}
